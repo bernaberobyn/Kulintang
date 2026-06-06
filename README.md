@@ -1,4 +1,4 @@
-# Kulintang
+# Kulintang Project : From Oral Tradition to Digital Sheet: A Machine Learning Approach to Kulintang Music Transcription
 
 ## Project summary
 
