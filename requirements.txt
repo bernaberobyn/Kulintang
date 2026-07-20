@@ -1,5 +1,7 @@
 streamlit
-requests
-base64
-json
-pillow
+moviepy
+librosa
+pandas
+numpy
+opencv-python
+tempfile
