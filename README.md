@@ -1,6 +1,9 @@
 # Kulintang Project : From Oral Tradition to Digital Sheet: A Machine Learning Approach to Kulintang Music Transcription
 
-## Oerview
+## Paper Publication
+The research paper related to this research has been published in IARIA AIMEDIA 2026 and it can be found [here](https://www.thinkmind.org/library/AIMEDIA/AIMEDIA_2026/aimedia_2026_2_60_40061.html).
+
+## Overview
 Kulintang music is a central component of the indigenous musical heritage of the southern Philippines, yet its transmission is increasingly at risk due to the absence of standardized written notation and its reliance on oral pedagogy. This limitation makes long-term preservation and global accessibility challenging. To address this gap, we present the first automated framework for converting kulintang performance videos into musical notes using machine learning algorithms. We constructed a novel dataset of 1,920 audio segments derived from recordings of nine kulintang instruments, each exhibiting distinct tunings, timbral properties, and culturally specific acoustic characteristics. Audio was segmented through silence detection and transformed into spectral features optimized for per-note classification. We benchmarked three supervised learning models (k-Nearest Neighbors,  Random Forest, and Multilayer Perceptron) to evaluate their effectiveness in recognizing kulintang notes across heterogeneous instruments. Random Forest achieved the strongest performance, with 90.03% cross-validation accuracy and 87% test accuracy, indicating the feasibility of data-driven transcription for this musical form. This work represents one of the earliest computational approaches for automated kulintang transcription and contributes new resources, methodologies, and tools that support preservation, education, and broader engagement with Filipino cultural heritage.
 
 ## Dataset [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/datasets/maryrobynbernabe/kulintang-dataset)
