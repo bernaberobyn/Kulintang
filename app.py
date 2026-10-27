@@ -1,151 +1,182 @@
-from pathlib import Path
+from moviepy.editor import VideoFileClip
+import librosa
+import pandas as pd
+import numpy as np
+import os
 import pickle
+import cv2
+import subprocess
+import streamlit as st
+from tempfile import NamedTemporaryFile
+
+
 import tempfile
 
-import numpy as np
-import pandas as pd
-import streamlit as st
+# Use temporary directories for all file storage
+temp_dir = tempfile.TemporaryDirectory()
+Segment_output_path = os.path.join(temp_dir.name, "video_segments")
+os.makedirs(Segment_output_path, exist_ok=True)
+audio_output_path = os.path.join(temp_dir.name, "audio.wav")
+model_path = os.path.join(os.getcwd(), "rf_best_model.pkl")
+
+# Segment video based on the silence intervals
+def extract_silent_timestamps(input_video_path: str, audio_output_path: str, top_db: int = 20 ):
+    # Step 1: Extract audio from video using moviepy
+    clip = VideoFileClip(input_video_path)
+    audio = clip.audio
+    audio.write_audiofile(audio_output_path)
+
+    # Step 2: Load audio and detect non-silent intervals using librosa
+    y, sr = librosa.load(audio_output_path, sr=None)
+    non_silent_intervals = librosa.effects.split(y, top_db=top_db)
+
+    # Convert non-silent intervals to seconds
+    non_silent_intervals_sec = [(float(start / sr), float(end / sr)) for start, end in non_silent_intervals]
+
+    return non_silent_intervals_sec
 
 
-MODEL_PATH = Path(__file__).resolve().parent / "rf_best_model.pkl"
+def split_video(input_file: str, output_prefix: str, output_path: str, intervals: list):
+    with VideoFileClip(input_file) as video:
+        for index, (start, end) in enumerate(intervals):
+            # Calculate the duration for the current segment
+            duration = end - start
+
+            # Subclip the video
+            subclip = video.subclip(start, end)
+
+            # Construct the output filename
+            output_file = f"{output_prefix}_part{index+1}.mov"
+
+            # Set the output path
+            set_output_path = os.path.join(output_path, output_file)
+
+            # Write the subclip to the file
+            subclip.write_videofile(set_output_path, codec='libx264')
+
+# Extract audio from the segments, featurize, and get prediction
+
+# Load the video file
+def extract_audio(video_path):
+        video = VideoFileClip(video_path)
+        # Extract and save the audio
+        audio_path = os.path.join(temp_dir.name, "audio1.wav")
+        audio = video.audio
+        audio.write_audiofile(audio_path)
+        return audio_path
+
+#function to extract features from audion files
+def extract_features(audio_path):
+    # load the audio file
+    y,sr = librosa.load(audio_path,mono=True) #load the audio file
+    # extract features
+    rmse = librosa.feature.rms(y=y)[0] #compute root-mean-square (RMS) value for each frame
+    spec_cent = librosa.feature.spectral_centroid(y=y,sr=sr) #calculate spectral_centroid
+    spec_bw = librosa.feature.spectral_bandwidth(y=y,sr=sr) #calculate spectral_bandwith
+    rolloff = librosa.feature.spectral_rolloff(y=y,sr=sr) #calculate spectral_rolloff
+    zcr = librosa.feature.zero_crossing_rate(y) #calculate zero crossing rate
+    mfcc = librosa.feature.mfcc(y=y,sr=sr) #Mel frequency ceptral coefficients (mfcc)
 
 
-def extract_features(y, sr=22050):
-    """Keep feature names, order, and sample rate consistent with training."""
-    import librosa
-
-    features = {
-        "RMSE": float(librosa.feature.rms(y=y).mean()),
-        "SPECTRAL_CENTROID": float(librosa.feature.spectral_centroid(y=y, sr=sr).mean()),
-        "SPECTRAL_BANDWIDTH": float(librosa.feature.spectral_bandwidth(y=y, sr=sr).mean()),
-        "ROLLOFF": float(librosa.feature.spectral_rolloff(y=y, sr=sr).mean()),
-        "ZERO_CROSSING_RATE": float(librosa.feature.zero_crossing_rate(y=y).mean()),
+    audio_dict={
+        'RMSE':rmse.mean(),
+        'SPECTRAL_CENTROID':spec_cent.mean(),
+        'SPECTRAL_BANDWIDTH':spec_bw.mean(),
+        'ROLLOFF':rolloff.mean(),
+        'ZERO_CROSSING_RATE':zcr.mean()
     }
-    for index, values in enumerate(librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)):
-        features[f"MFCC_FEATURE_{index}"] = float(values.mean())
-    return features
 
+    #add the mfcc values
+    for index,mfcc_set in enumerate(mfcc):
+        feature_name=f"MFCC_FEATURE_{index}"
+        audio_dict[feature_name]=np.mean(mfcc_set)
 
-def process_video(input_path, work_dir, model, top_db, threshold):
-    # Defer the audio/video stack until processing so the upload screen can load
-    # without importing librosa/Numba and MoviePy on a cold server.
-    import librosa
-    from moviepy import VideoFileClip
-    from PIL import Image, ImageDraw, ImageFont
-
-    audio_path = work_dir / "audio.wav"
-    output_path = work_dir / "output.mp4"
-    with VideoFileClip(str(input_path)) as video:
-        if video.audio is None:
-            raise ValueError("The uploaded video has no audio track.")
-        video.audio.write_audiofile(str(audio_path), codec="pcm_s16le", logger=None)
-        y, sr = librosa.load(str(audio_path), sr=None, mono=True)
-        if y.size == 0:
-            raise ValueError("The audio track is empty.")
-        # librosa's relative silence threshold alone can classify all-zero audio
-        # as non-silent, so explicitly handle it first.
-        intervals = (
-            librosa.effects.split(y, top_db=top_db)
-            if np.max(np.abs(y)) > 1e-8
-            else np.empty((0, 2), dtype=int)
-        )
-        rows = []
-        for start, end in intervals:
-            start_sec = float(start / sr)
-            end_sec = min(float(end / sr), float(video.duration))
-            if end_sec <= start_sec:
-                continue
-            segment = librosa.resample(y[start:end], orig_sr=sr, target_sr=22050)
-            frame = pd.DataFrame([extract_features(segment)])
-            if hasattr(model, "feature_names_in_"):
-                expected = list(model.feature_names_in_)
-                missing = set(expected) - set(frame.columns)
-                if missing:
-                    raise ValueError(f"Model expects unavailable features: {sorted(missing)}")
-                frame = frame.loc[:, expected]
-            else:
-                frame = frame.to_numpy()
-            probabilities = np.asarray(model.predict_proba(frame))
-            if probabilities.ndim != 2 or probabilities.shape[0] != 1:
-                raise ValueError("Expected a single-output classification model.")
-            best = int(np.argmax(probabilities[0]))
-            confidence = float(probabilities[0, best])
-            label = str(model.classes_[best]) if confidence > threshold else "Unknown"
-            rows.append({"start_time": start_sec, "end_time": end_sec,
-                         "prediction": label, "confidence": confidence})
-
-        results = pd.DataFrame(rows, columns=["start_time", "end_time", "prediction", "confidence"])
-        starts = results["start_time"].to_numpy(dtype=float)
-        font = ImageFont.load_default(size=max(12, min(24, int(video.w / 35))))
-
-        def overlay(get_frame, t):
-            image = get_frame(t).copy()
-            index = int(np.searchsorted(starts, t, side="right")) - 1
-            if index >= 0 and t < rows[index]["end_time"]:
-                row = rows[index]
-                text = f"Prediction: {row['prediction']} ({row['confidence']:.0%})"
-                canvas = Image.fromarray(image)
-                ImageDraw.Draw(canvas).text(
-                    (10, 10), text, font=font, fill=(0, 255, 0),
-                    stroke_width=1, stroke_fill=(0, 0, 0),
-                )
-                image = np.asarray(canvas)
-            return image
-
-        annotated = video.transform(overlay)
-        try:
-            annotated.write_videofile(
-                str(output_path), codec="libx264", audio_codec="aac",
-                threads=2,
-                temp_audiofile=str(work_dir / "encoded_audio.m4a"),
-                ffmpeg_params=["-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-movflags", "+faststart"],
-                logger=None,
-            )
-        finally:
-            annotated.close()
-    return output_path.read_bytes(), results
-
+    return audio_dict
 
 def main():
     st.title("Kulintang Music Transcription")
-    st.write("Upload a video to classify non-silent intervals and overlay predictions.")
-    uploaded = st.file_uploader("Upload video", type=["mp4", "mov"])
-    top_db = st.slider("Silence threshold (dB below peak)", 5, 60, 20)
-    threshold = st.slider("Minimum prediction confidence", 0.0, 1.0, 0.7, 0.05)
-    if st.button("Process video", disabled=uploaded is None):
-        st.session_state.pop("processed_result", None)
-        if not MODEL_PATH.is_file():
-            st.error(f"Place rf_best_model.pkl next to app.py: {MODEL_PATH}")
-            return
+    st.write("Upload a video to transcribe and overlay detections.")
+
+    uploaded_file = st.file_uploader("Upload Video", type=["mp4", "mov"])
+    if uploaded_file is not None:
+        with NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+            temp_video.write(uploaded_file.read())
+            temp_video_path = temp_video.name
+
+        st.info("Processing video...")
+        # Run the main pipeline
         try:
-            # Only load a model you trust: pickle files can execute Python code.
-            with MODEL_PATH.open("rb") as handle:
-                model = pickle.load(handle)
-            if not hasattr(model, "predict_proba") or not hasattr(model, "classes_"):
-                raise ValueError("The model must support predict_proba and classes_.")
-            with st.spinner("Processing video..."):
-                with tempfile.TemporaryDirectory() as directory:
-                    work_dir = Path(directory)
-                    input_path = work_dir / ("input" + Path(uploaded.name).suffix.lower())
-                    input_path.write_bytes(uploaded.getvalue())
-                    video_bytes, results = process_video(input_path, work_dir, model, top_db, threshold)
-                st.session_state["processed_result"] = (video_bytes, results)
-        except Exception as exc:
-            st.error(f"Processing failed: {exc}")
-            return
+            # Use temp_video_path instead of video_path
+            non_silent_intervals = extract_silent_timestamps(temp_video_path, audio_output_path)
+            video_name = temp_video_path.split("/")[-1].split(".")[0]
+            split_video(temp_video_path, video_name, Segment_output_path, non_silent_intervals)
 
-    if "processed_result" in st.session_state:
-        video_bytes, results = st.session_state["processed_result"]
-        st.success("Video processing complete.")
-        if results.empty:
-            st.info("No non-silent intervals were detected.")
-        st.video(video_bytes, format="video/mp4")
-        st.dataframe(results, hide_index=True)
-        st.download_button("Download processed video", video_bytes,
-                           "output_with_detections.mp4", "video/mp4", on_click="ignore")
-        st.download_button("Download predictions", results.to_csv(index=False).encode("utf-8"),
-                           "predictions.csv", "text/csv", on_click="ignore")
+            with open(model_path, 'rb') as file:
+                model = pickle.load(file)
 
+            segments = os.listdir(Segment_output_path)
+            predictions = []
+            Confidence_threshold = 0.7
+            for segment in segments:
+                segment_path = os.path.join(Segment_output_path, segment)
+                audio_path = extract_audio(segment_path)
+                audio_dict = extract_features(audio_path)
+                input = pd.DataFrame([audio_dict])
+                prediction = model.predict_proba(input)
+                if max(prediction[0]) > Confidence_threshold:
+                    predictions.append(np.argmax(prediction[0]))
+                else:
+                    predictions.append(None)
+
+            df = pd.DataFrame({
+                'start_time': [interval[0] for interval in non_silent_intervals],
+                'end_time': [interval[1] for interval in non_silent_intervals],
+                'prediction': predictions
+            })
+            predictions_csv_path = os.path.join(temp_dir.name, "predictions.csv")
+            df.to_csv(predictions_csv_path, index = False)
+
+            # Overlay predictions on video
+            cap = cv2.VideoCapture(temp_video_path)
+            if not cap.isOpened():
+                st.error(f"Cannot open video file: {temp_video_path}")
+                return
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            output_video_path = os.path.join(temp_dir.name, "output_video.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                current_sec = frame_idx / fps
+                active_predictions = df[(df['start_time'] <= current_sec) & (df['end_time'] >= current_sec)]
+                y_offset = 50
+                for _, row in active_predictions.iterrows():
+                    text = f"Prediction: {row['prediction']}"
+                    cv2.putText(frame, text, (50, y_offset), cv2.FONT_HERSHEY_SIMPLEX,
+                                1, (0, 255, 0), 2, cv2.LINE_AA)
+                    y_offset += 40
+                out.write(frame)
+                frame_idx += 1
+            cap.release()
+            out.release()
+            st.success("Video processing complete.")
+            # st.header("Output Preview")
+            # st.video(output_video_path)
+            st.write("Download your output video below:")
+            with open(output_video_path, "rb") as f:
+                st.download_button(
+                    label="Download processed video",
+                    data=f,
+                    file_name="output_with_detections.mp4",
+                    mime="video/mp4"
+                )
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
