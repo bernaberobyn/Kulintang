@@ -1,11 +1,6 @@
 streamlit==1.50.0
-moviepy==2.2.1
+moviepy==1.0.3
 librosa==0.11.0
-pandas==2.3.3
-numpy==2.0.2
-pillow==11.3.0
-scikit-learn==1.6.1
-imageio-ffmpeg==0.6.0
-# Pin librosa's compiled dependencies to the versions tested with this model.
-numba==0.60.0
-llvmlite==0.43.0
+opencv-python==4.12.0.88
+pandas==2.3.1
+numpy==2.2.6
