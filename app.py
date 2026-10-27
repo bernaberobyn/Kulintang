@@ -2,9 +2,6 @@ from pathlib import Path
 import pickle
 import tempfile
 
-import cv2
-import librosa
-from moviepy import VideoFileClip
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -15,6 +12,8 @@ MODEL_PATH = Path(__file__).resolve().parent / "rf_best_model.pkl"
 
 def extract_features(y, sr=22050):
     """Keep feature names, order, and sample rate consistent with training."""
+    import librosa
+
     features = {
         "RMSE": float(librosa.feature.rms(y=y).mean()),
         "SPECTRAL_CENTROID": float(librosa.feature.spectral_centroid(y=y, sr=sr).mean()),
@@ -28,6 +27,12 @@ def extract_features(y, sr=22050):
 
 
 def process_video(input_path, work_dir, model, top_db, threshold):
+    # Defer the audio/video stack until processing so the upload screen can load
+    # without importing librosa/Numba and MoviePy on a cold server.
+    import librosa
+    from moviepy import VideoFileClip
+    from PIL import Image, ImageDraw, ImageFont
+
     audio_path = work_dir / "audio.wav"
     output_path = work_dir / "output.mp4"
     with VideoFileClip(str(input_path)) as video:
@@ -71,6 +76,7 @@ def process_video(input_path, work_dir, model, top_db, threshold):
 
         results = pd.DataFrame(rows, columns=["start_time", "end_time", "prediction", "confidence"])
         starts = results["start_time"].to_numpy(dtype=float)
+        font = ImageFont.load_default(size=max(12, min(24, int(video.w / 35))))
 
         def overlay(get_frame, t):
             image = get_frame(t).copy()
@@ -78,9 +84,12 @@ def process_video(input_path, work_dir, model, top_db, threshold):
             if index >= 0 and t < rows[index]["end_time"]:
                 row = rows[index]
                 text = f"Prediction: {row['prediction']} ({row['confidence']:.0%})"
-                scale = max(0.4, min(1.0, image.shape[1] / 900))
-                cv2.putText(image, text, (10, min(40, image.shape[0] - 5)),
-                            cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 255, 0), 2, cv2.LINE_AA)
+                canvas = Image.fromarray(image)
+                ImageDraw.Draw(canvas).text(
+                    (10, 10), text, font=font, fill=(0, 255, 0),
+                    stroke_width=1, stroke_fill=(0, 0, 0),
+                )
+                image = np.asarray(canvas)
             return image
 
         annotated = video.transform(overlay)
